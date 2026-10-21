@@ -230,6 +230,7 @@ class TestWebSocketCommand:
         session.ws_connect.assert_called_once_with(
             'wss://ha.example.test/api/websocket',
             max_msg_size=ha_tool._REGISTRY_MAX_MSG,
+            timeout=aiohttp.ClientWSTimeout(ws_close=1.0),
         )
 
         assert ws.send_json.await_args_list[0].args[0] == {

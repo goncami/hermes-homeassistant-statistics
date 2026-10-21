@@ -174,9 +174,9 @@ def _entity_matches(entity_id: str, patterns: List[str]) -> bool:
     return False
 
 
-def _operator_filter_violation(entity_id: str) -> Optional[str]:
+def _operator_filter_violation(entity_id: str, filters=None) -> Optional[str]:
     """Return why the active operator filters exclude an ID, or None."""
-    allow, deny = _get_entity_filter_config()
+    allow, deny = _get_entity_filter_config() if filters is None else filters
     if deny and _entity_matches(entity_id, deny):
         return "excluded by HASS_ENTITY_DENYLIST"
     if allow and not _entity_matches(entity_id, allow):
@@ -280,7 +280,10 @@ async def _ws_command(message: dict, timeout: int = 30):
             timeout=client_timeout, trace_configs=[trace], cookie_jar=aiohttp.DummyCookieJar(),
         ) as session:
             # recorder/list_statistic_ids on a big install exceeds aiohttp's 4 MiB default frame.
-            async with session.ws_connect(ws_url, max_msg_size=_REGISTRY_MAX_MSG) as ws:
+            async with session.ws_connect(
+                ws_url, max_msg_size=_REGISTRY_MAX_MSG,
+                timeout=aiohttp.ClientWSTimeout(ws_close=min(1.0, timeout)),
+            ) as ws:
                 hello = await ws.receive_json()
                 if hello.get('type') != 'auth_required':
                     raise _PublicHAError('Unexpected Home Assistant WebSocket greeting')
@@ -318,17 +321,18 @@ async def _ws_command(message: dict, timeout: int = 30):
                 return response.get('result')
 
 
-def _statistic_filter_violation(statistic_id: str) -> Optional[str]:
+def _statistic_filter_violation(statistic_id: str, filters=None) -> Optional[str]:
     """Why the operator allow/deny lists hide this statistic, or ``None``.
 
     Recorder statistics of an entity use the entity id (``sensor.house_energy``), so they get the
     same check as ha_get_state. External statistics (``domain:name``) are matched as plain ids:
     the denylist can veto them, and with an allowlist they must be listed explicitly.
     """
-    return _operator_filter_violation(statistic_id.lower())
+    return _operator_filter_violation(statistic_id.lower(), filters)
 
 
 async def _async_list_statistics(search=None, max_rows=_DEFAULT_LIMITS.max_rows):
+    filters = _get_entity_filter_config()
     result = await _ws_command({
         'type': 'recorder/list_statistic_ids',
     })
@@ -338,11 +342,11 @@ async def _async_list_statistics(search=None, max_rows=_DEFAULT_LIMITS.max_rows)
         raise _PublicHAError("Unexpected Recorder statistics list format")
 
     # Operator allow/deny lists govern statistics too: an entity's long-term statistics share its id.
-    allow, deny = _get_entity_filter_config()
+    allow, deny = filters
     if allow or deny:
         statistics = [
             item for item in statistics
-            if _statistic_filter_violation(str(item.get('statistic_id', ''))) is None
+            if _statistic_filter_violation(str(item.get('statistic_id', '')), filters) is None
         ]
 
     if search:
@@ -408,6 +412,7 @@ def _handle_get_statistics(args: dict, **kw) -> str:
             'statistic_ids must be a non-empty list'
         )
 
+    filters = _get_entity_filter_config()
     for statistic_id in statistic_ids:
         if (
             not isinstance(statistic_id, str)
@@ -418,7 +423,7 @@ def _handle_get_statistics(args: dict, **kw) -> str:
             return tool_error(
                 f'Invalid statistic_id format: {statistic_id!r}'
             )
-        violation = _statistic_filter_violation(statistic_id)
+        violation = _statistic_filter_violation(statistic_id, filters)
         if violation:
             return tool_error(
                 f'{statistic_id} is excluded by operator config ({violation}). '

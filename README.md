@@ -16,7 +16,7 @@ entry has been created. Installation from GitHub will be documented after approv
 Security remediation is in progress: transport/error hardening is implemented;
 patched dependencies and cookie suppression are prepared. Installation compatibility
 with Hermes is currently blocked; query/result budgets are implemented and
-performance work remains pending. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
+filter and connection-lifecycle improvements are implemented. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
 
 ## Requirements and configuration
 
@@ -54,6 +54,8 @@ glob and family-prefix semantics (`.`/`_` boundary equivalence); IDs are lowerca
 for matching, so write patterns in lowercase. External IDs such as
 `custom:energy` are supported and must also match an active allowlist.
 These are plugin filters, not a replacement for Home Assistant access control.
+Patterns are read and parsed once per call, then read again on the next call;
+there is no shared filter cache across profiles or requests.
 
 After installing locally with `hermes plugins install /absolute/path/to/this/repo`,
 use `hermes tools` to enable the toolset for the relevant platform and begin a new
@@ -125,7 +127,9 @@ choose HTTPS where needed. Redirects are rejected even within the same origin.
 Errors returned to the model and written to plugin logs use fixed categories;
 raw exception text, configured URLs and remote error messages are not reflected.
 A DummyCookieJar discards response cookies, which HA token authentication does not
-need.
+need. After receiving the result, the WebSocket close handshake waits at most one
+second (also bounded by the overall request deadline), so a peer that fails to
+acknowledge closure does not delay delivery for the library's default ten seconds.
 
 No direct database access, telemetry, file reads of credentials, credential
 storage, self-updates, background services or shell commands. The token retains
@@ -144,6 +148,12 @@ PYTHONPATH=/absolute/path/to/hermes-agent python -m pytest tests -q
 hermes plugins validate /absolute/path/to/this/repo --install-deps
 hermes plugins doctor /absolute/path/to/this/repo --ci
 ```
+
+Tool callbacks retain Hermes's synchronous worker contract. Async callers should
+run synchronous registry dispatch in a worker rather than calling a callback
+directly on their event loop. Cancelling a worker Future does not forcibly stop
+its thread; the operation's network deadline remains the bound in that case.
+Cancelling the native network coroutine releases its client session.
 
 Tests use mocked traffic plus temporary loopback HTTP(S) servers and synthetic
 credentials, never a live HA token. `trustme` (test extra only) creates ephemeral
