@@ -4,6 +4,7 @@ import fnmatch
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
@@ -15,18 +16,27 @@ def tool_error(message: str) -> str:
     return json.dumps({"error": str(message)}, ensure_ascii=False)
 
 
-def url_scheme_problem(url: str) -> Optional[str]:
-    """Why ``url`` can't be the Home Assistant base URL, or None when it can.
+class _PublicHAError(RuntimeError):
+    """An operator-facing message authored here, never supplied by the remote peer."""
 
-    Without a scheme every request URL becomes ``host/api/...``, which aiohttp rejects with only that
-    string as the reason, so the misconfiguration would surface as an endless series of opaque errors.
-    """
-    if url.startswith(("http://", "https://")):
-        return None
-    return (
-        f"Home Assistant URL {url!r} has no http:// or https:// scheme. Set HASS_URL "
-        "to the full URL, e.g. https://ha.example.com or "
-        "http://homeassistant.local:8123")
+
+def url_scheme_problem(url: str) -> Optional[str]:
+    """Validate the base URL without reflecting potentially sensitive configuration."""
+    problem = (
+        "Invalid HASS_URL: use an absolute http:// or https:// URL with a host, "
+        "without credentials, query, fragment or whitespace"
+    )
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in url):
+        return problem
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment or parsed.port == 0):
+            return problem
+    except ValueError:
+        return problem
+    return None
 
 
 _HASS_ENTITY_ALLOWLIST: str = ""
@@ -36,11 +46,14 @@ _HASS_ENTITY_DENYLIST: str = ""
 
 
 def _get_config():
-    """Return the active profile's Home Assistant URL and token; raise ValueError on a URL without a scheme."""
+    """Return the active profile's validated base URL and nonempty token."""
     hass_url = (get_secret("HASS_URL", "http://homeassistant.local:8123") or "").rstrip("/")
     if problem := url_scheme_problem(hass_url):
-        raise ValueError(problem)
-    return hass_url, (get_secret("HASS_TOKEN", "") or "").strip()
+        raise _PublicHAError(problem)
+    token = (get_secret("HASS_TOKEN", "") or "").strip()
+    if not token:
+        raise _PublicHAError("HASS_TOKEN is not configured")
+    return hass_url, token
 
 
 def _get_entity_filter_config():
@@ -123,14 +136,24 @@ def _dispatch(coro, log_name: str, fail_msg: str) -> str:
     """Run ``coro`` and wrap as ``{"result": ...}``; on error log and return tool_error."""
     try:
         return json.dumps({"result": _run_async(coro)})
-    except Exception as e:
-        logger.error("%s error: %s", log_name, e)
-        return tool_error(f"{fail_msg}: {e}")
+    except Exception as exc:
+        import aiohttp
+        # Errors can carry URLs, credentials or arbitrary peer text; never reflect them.
+        if isinstance(exc, _PublicHAError):
+            detail = str(exc)
+        elif isinstance(exc, TimeoutError):
+            detail = "Home Assistant request timed out"
+        elif isinstance(exc, aiohttp.ClientError):
+            detail = "Unable to connect to Home Assistant; check URL, network and TLS"
+        else:
+            detail = "Home Assistant request failed"
+        logger.error("%s: %s", log_name, detail)
+        return tool_error(f"{fail_msg}: {detail}")
 
 
 def _check_ha_available() -> bool:
     """Tool is only available when HASS_TOKEN is set."""
-    return bool(get_secret("HASS_TOKEN"))
+    return bool((get_secret("HASS_TOKEN", "") or "").strip())
 
 
 _ALLOWED_STAT_PERIODS = {'5minute', 'hour', 'day', 'week', 'month', 'year'}
@@ -175,57 +198,50 @@ async def _ws_command(message: dict, timeout: int = 30):
     ws_url = ws_url.rstrip('/') + '/api/websocket'
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
+    async def reject_redirect(session, context, params):
+        # The auth token belongs only to the explicitly configured endpoint.
+        raise _PublicHAError("Home Assistant redirects are not allowed; configure the final HASS_URL")
+
+    trace = aiohttp.TraceConfig()
+    trace.on_request_redirect.append(reject_redirect)
     async with asyncio.timeout(timeout):
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+        async with aiohttp.ClientSession(timeout=client_timeout, trace_configs=[trace]) as session:
             # recorder/list_statistic_ids on a big install exceeds aiohttp's 4 MiB default frame.
             async with session.ws_connect(ws_url, max_msg_size=_REGISTRY_MAX_MSG) as ws:
                 hello = await ws.receive_json()
                 if hello.get('type') != 'auth_required':
-                    raise RuntimeError(
-                        'Unexpected Home Assistant WebSocket greeting: '
-                        + str(hello.get('type'))
-                    )
-    
+                    raise _PublicHAError('Unexpected Home Assistant WebSocket greeting')
+
                 await ws.send_json({
                     'type': 'auth',
                     'access_token': token,
                 })
-    
+
                 auth = await ws.receive_json()
                 if auth.get('type') != 'auth_ok':
-                    raise RuntimeError(
-                        'Home Assistant WebSocket authentication failed: '
-                        + str(auth.get('type'))
-                    )
-    
+                    raise _PublicHAError('Home Assistant WebSocket authentication failed')
+
                 command = dict(message)
                 command['id'] = 1
                 await ws.send_json(command)
-    
+
                 response = await ws.receive_json()
-    
+
                 if response.get('id') != 1:
-                    raise RuntimeError(
-                        'Unexpected Home Assistant WebSocket response id'
-                    )
-    
+                    raise _PublicHAError('Unexpected Home Assistant WebSocket response id')
+
                 if response.get('type') != 'result':
-                    raise RuntimeError(
-                        'Unexpected Home Assistant WebSocket response: '
-                        + str(response.get('type'))
-                    )
-    
+                    raise _PublicHAError('Unexpected Home Assistant WebSocket response')
+
                 if not response.get('success'):
                     error = response.get('error') or {}
                     detail = (
-                        error.get('message')
-                        or error.get('code')
-                        or 'unknown error'
+                        'Unknown command' if isinstance(error, dict)
+                        and error.get('code') == 'unknown_command'
+                        else 'Recorder rejected the statistics request'
                     )
-                    raise RuntimeError(
-                        'Home Assistant WebSocket command failed: ' + detail
-                    )
-    
+                    raise _PublicHAError('Home Assistant WebSocket command failed: ' + detail)
+
                 return response.get('result')
 
 

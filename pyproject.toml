@@ -9,4 +9,4 @@ requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.9,<4"]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "PyYAML>=6,<7"]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "PyYAML>=6,<7", "trustme>=1.2,<2"]

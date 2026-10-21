@@ -23,7 +23,9 @@ Standalone extraction: goncami's project.
 Only the statistics capabilities and required helpers were retained. New work:
 independent manifest/entry point/toolset; no adapter dependency; validation of
 non-string period/type values; an explicit whole-exchange WebSocket deadline;
-standalone regression tests and documentation.
+standalone regression tests and documentation. Subsequent local hardening adds
+redirect rejection, structural URL checks and fixed public error categories,
+covered by loopback HTTP(S) regressions.
 
 This extraction does not imply that either original author has reviewed or
 endorsed the standalone candidate. No author email addresses or private data are

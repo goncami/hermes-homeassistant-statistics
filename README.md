@@ -13,6 +13,8 @@ platform, subscribe to events or call Home Assistant services.
 
 Local pre-publication candidate, version 0.1.0. No remote repository or catalog
 entry has been created. Installation from GitHub will be documented after approval.
+Security remediation is in progress: transport/error hardening is implemented;
+dependency compatibility, query/result budgets and performance work remain pending.
 
 ## Requirements and configuration
 
@@ -33,6 +35,13 @@ Configure through Hermes's normal profile configuration/secret setup:
 Configuration is read at call time from the active Hermes profile. There are no
 credential files in this repository. Do not commit tokens or instance-specific URLs.
 The same `HASS_*` settings can serve the official plugin and this plugin.
+
+`HASS_URL` must be the final HTTP(S) base URL, with a host and optional proxy path.
+Embedded credentials, query strings, fragments and whitespace are rejected before
+connecting. Private hosts, IPv6 and local HTTP are supported. All HTTP redirects
+are rejected before connecting to their destination; configure the final base URL
+instead of relying on a proxy redirect. An empty or whitespace-only token fails
+before any connection is attempted.
 
 Filters apply to discovery and direct queries. An excluded ID rejects the entire
 query before any WebSocket request. Patterns retain the official plugin's exact,
@@ -80,7 +89,9 @@ Each call opens an authenticated connection to the configured Home Assistant
 `recorder/statistics_during_period`, and closes it. The whole exchange has a
 30-second deadline and a 64 MiB maximum received message. HTTPS uses normal TLS
 verification. HTTP uses an unencrypted connection, including token authentication;
-choose HTTPS where needed.
+choose HTTPS where needed. Redirects are rejected even within the same origin.
+Errors returned to the model and written to plugin logs use fixed categories;
+raw exception text, configured URLs and remote error messages are not reflected.
 
 No direct database access, telemetry, file reads of credentials, credential
 storage, self-updates, background services or shell commands. The token retains
@@ -100,7 +111,10 @@ hermes plugins validate /absolute/path/to/this/repo --install-deps
 hermes plugins doctor /absolute/path/to/this/repo --ci
 ```
 
-Tests use mocked WebSocket traffic and synthetic examples, never a live token.
+Tests use mocked traffic plus temporary loopback HTTP(S) servers and synthetic
+credentials, never a live HA token. `trustme` (test extra only) creates ephemeral
+TLS certificates in memory. Integration tests need permission to bind loopback
+ports; no test contacts a user's Home Assistant instance.
 The original statistics tests are retained with import-path changes. Additional
 coverage checks profile propagation, malformed inputs, deadline enforcement,
 external statistic filters and exact two-tool registration. The complete Hermes
