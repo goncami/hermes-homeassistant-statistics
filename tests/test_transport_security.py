@@ -207,3 +207,39 @@ async def test_remote_command_error_never_enters_tool_result_or_logs(caplog):
     assert "Unknown command" in result["error"]
     for value in ("synthetic-test-token", "private.example.test", "synthetic-sensitive-detail"):
         assert value not in json.dumps(result) + caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unneeded_response_cookies_are_not_stored():
+    auth, clients = [], []
+    async def cookie_endpoint(request):
+        # A real hostname makes aiohttp's normal CookieJar accept the response cookie.
+        response = web.WebSocketResponse()
+        response.set_cookie("unused", "synthetic-cookie")
+        await response.prepare(request)
+        await response.send_json({"type": "auth_required"})
+        auth.append(await response.receive_json())
+        await response.send_json({"type": "auth_ok"})
+        command = await response.receive_json()
+        await response.send_json({"id": command["id"], "type": "result", "success": True, "result": []})
+        await response.close()
+        return response
+    app = web.Application()
+    app.router.add_get("/api/websocket", cookie_endpoint)
+    real_session = aiohttp.ClientSession
+    def session(*args, **kwargs):
+        client = real_session(*args, **kwargs)
+        clients.append(client)
+        return client
+    async with TestServer(app) as server:
+        scope = set_secret_scope({
+            "HASS_URL": str(server.make_url("").with_host("localhost")).rstrip("/"),
+            "HASS_TOKEN": "synthetic-test-token",
+        })
+        try:
+            with patch.object(aiohttp, "ClientSession", side_effect=session):
+                assert await tools._ws_command({"type": "recorder/list_statistic_ids"}) == []
+        finally:
+            reset_secret_scope(scope)
+    assert len(auth) == 1
+    assert len(clients[0].cookie_jar) == 0

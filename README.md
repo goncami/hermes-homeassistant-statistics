@@ -14,14 +14,19 @@ platform, subscribe to events or call Home Assistant services.
 Local pre-publication candidate, version 0.1.0. No remote repository or catalog
 entry has been created. Installation from GitHub will be documented after approval.
 Security remediation is in progress: transport/error hardening is implemented;
-dependency compatibility, query/result budgets and performance work remain pending.
+patched dependencies and cookie suppression are prepared. Installation compatibility
+with Hermes is currently blocked; query/result budgets and performance work remain
+pending. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
 
 ## Requirements and configuration
 
-Python 3.11+, Hermes >=0.21.5, `aiohttp>=3.9,<4`, and a Home Assistant instance
+Python 3.11+, Hermes >=0.21.5, `aiohttp>=3.14.4,<4`, and a Home Assistant instance
 with Recorder statistics and a Long-Lived Access Token. The Hermes floor follows
 the source plugin; this candidate has been tested against the exact core main
-core revision `278aeffe16945e7b1405e3c471ad08553c059237`, not every supported release.
+core revision `278aeffe16945e7b1405e3c471ad08553c059237`, not every supported release. This API floor is not a claim
+that dependencies resolve with that release: the checked core pins aiohttp 3.14.3,
+which conflicts with this candidate's security floor. No compatible Hermes release
+has been established yet.
 
 Configure through Hermes's normal profile configuration/secret setup:
 
@@ -92,6 +97,8 @@ verification. HTTP uses an unencrypted connection, including token authenticatio
 choose HTTPS where needed. Redirects are rejected even within the same origin.
 Errors returned to the model and written to plugin logs use fixed categories;
 raw exception text, configured URLs and remote error messages are not reflected.
+A DummyCookieJar discards response cookies, which HA token authentication does not
+need.
 
 No direct database access, telemetry, file reads of credentials, credential
 storage, self-updates, background services or shell commands. The token retains
@@ -118,7 +125,7 @@ ports; no test contacts a user's Home Assistant instance.
 The original statistics tests are retained with import-path changes. Additional
 coverage checks profile propagation, malformed inputs, deadline enforcement,
 external statistic filters and exact two-tool registration. The complete Hermes
-dependency-resolution gate remains pending.
+dependency-resolution gate remains pending; see DEPENDENCY_COMPATIBILITY.md.
 
 ## License and origin
 

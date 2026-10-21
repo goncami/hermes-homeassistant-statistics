@@ -205,7 +205,10 @@ async def _ws_command(message: dict, timeout: int = 30):
     trace = aiohttp.TraceConfig()
     trace.on_request_redirect.append(reject_redirect)
     async with asyncio.timeout(timeout):
-        async with aiohttp.ClientSession(timeout=client_timeout, trace_configs=[trace]) as session:
+        # HA authenticates via WebSocket JSON; response cookies are unnecessary.
+        async with aiohttp.ClientSession(
+            timeout=client_timeout, trace_configs=[trace], cookie_jar=aiohttp.DummyCookieJar(),
+        ) as session:
             # recorder/list_statistic_ids on a big install exceeds aiohttp's 4 MiB default frame.
             async with session.ws_connect(ws_url, max_msg_size=_REGISTRY_MAX_MSG) as ws:
                 hello = await ws.receive_json()
