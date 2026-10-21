@@ -1,0 +1,26 @@
+name: homeassistant-statistics
+label: Home Assistant Statistics
+version: 0.1.0
+author: goncami
+description: Read-only Home Assistant Recorder statistics over WebSocket.
+requires_hermes: ">=0.21.5"
+provides_tools:
+  - ha_list_statistics
+  - ha_get_statistics
+provides_hooks: []
+provides_middleware: []
+requires_env:
+  - name: HASS_TOKEN
+    description: Home Assistant Long-Lived Access Token
+    prompt: Home Assistant Long-Lived Access Token
+    password: true
+optional_env:
+  - name: HASS_URL
+    description: Home Assistant base URL (default http://homeassistant.local:8123)
+    password: false
+  - name: HASS_ENTITY_ALLOWLIST
+    description: Comma-separated statistic ID allow patterns; denylist wins
+    password: false
+  - name: HASS_ENTITY_DENYLIST
+    description: Comma-separated statistic ID deny patterns; final veto
+    password: false

@@ -1,0 +1,12 @@
+[project]
+name = "hermes-homeassistant-statistics"
+version = "0.1.0"
+description = "Read-only Home Assistant Recorder statistics plugin for Hermes Agent"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "goncami"}]
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.9,<4"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "PyYAML>=6,<7"]

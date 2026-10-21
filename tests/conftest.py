@@ -1,0 +1,39 @@
+import importlib.util
+import sys
+from pathlib import Path
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("homeassistant_statistics", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
+plugin = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = plugin
+spec.loader.exec_module(plugin)
+
+@pytest.fixture(autouse=True)
+def isolated_secrets():
+    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    token = set_secret_scope({})
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
+class _RepoRootIsNotATestPackage:
+    """The repo root *is* the plugin package (it has an ``__init__.py`` with relative imports), so
+    pytest would collect it as a test ``Package`` and import that ``__init__.py`` standalone during
+    setup, where the relative imports cannot resolve. Collect the root as a plain directory instead.
+
+    Registered as a global plugin (not a conftest hook) because the root directory's collector is
+    created through its *parent's* hook proxy, which never sees a conftest inside the root."""
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_collect_directory(self, path, parent):
+        if Path(path).resolve() == ROOT:
+            return pytest.Dir.from_parent(parent, path=path)
+        return None
+
+
+def pytest_configure(config):
+    if not config.pluginmanager.has_plugin("statistics-repo-root"):
+        config.pluginmanager.register(_RepoRootIsNotATestPackage(), "statistics-repo-root")
