@@ -20,12 +20,11 @@ def isolated_secrets():
 
 
 class _RepoRootIsNotATestPackage:
-    """The repo root *is* the plugin package (it has an ``__init__.py`` with relative imports), so
-    pytest would collect it as a test ``Package`` and import that ``__init__.py`` standalone during
-    setup, where the relative imports cannot resolve. Collect the root as a plain directory instead.
+    """Collect the root as a directory so pytest doesn't break its relative imports.
 
-    Registered as a global plugin (not a conftest hook) because the root directory's collector is
-    created through its *parent's* hook proxy, which never sees a conftest inside the root."""
+    This must be a global plugin: the root collector uses its parent's hooks,
+    which cannot see a conftest inside the root.
+    """
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_collect_directory(self, path, parent):

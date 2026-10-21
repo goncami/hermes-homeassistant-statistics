@@ -1,4 +1,4 @@
-"""Read-only Recorder statistics. Derived from official-plugins PR #126; see NOTICE.md."""
+"""Read-only Recorder statistics. See README.md for origin and attribution."""
 import asyncio
 import fnmatch
 import json
@@ -15,12 +15,12 @@ TOOLSET = "homeassistant-statistics"
 
 
 def tool_error(message: str) -> str:
-    """Tool error envelope (same JSON shape as core's ``tools.registry.tool_error``)."""
+    """Use the same error format as Hermes's tools.registry.tool_error."""
     return json.dumps({"error": str(message)}, ensure_ascii=False)
 
 
 class _PublicHAError(RuntimeError):
-    """An operator-facing message authored here, never supplied by the remote peer."""
+    """Safe to show in tool results and logs. Do not pass server error text."""
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ def _get_statistics_limits() -> _StatisticsLimits:
 
 
 def _bounded_result_json(result, max_bytes: int) -> str:
-    # Stop assembling ASCII JSON once the successful output exceeds its budget.
+    # ASCII encoding lets us count bytes without building the whole response first.
     chunks = []
     size = 0
     for chunk in json.JSONEncoder(ensure_ascii=True).iterencode({"result": result}):
@@ -68,7 +68,7 @@ def _check_query_budget(ids, start, end, period, limits):
         raise _PublicHAError(
             f"Too many statistic IDs (limit {limits.max_ids}); split the request"
         )
-    # An edge bin and conservative calendar durations allow partial periods and DST.
+    # Short periods account for daylight saving time; the extra row covers partial bins.
     seconds = {"5minute": 300, "hour": 3600, "day": 23 * 3600,
                "week": 167 * 3600, "month": 28 * 86400 - 3600,
                "year": 365 * 86400 - 3600}[period]
@@ -91,7 +91,7 @@ def _check_row_budget(count, max_rows):
 
 
 def url_scheme_problem(url: str) -> Optional[str]:
-    """Validate the base URL without reflecting potentially sensitive configuration."""
+    """Check HASS_URL without including its value in errors."""
     problem = (
         "Invalid HASS_URL: use an absolute http:// or https:// URL with a host, "
         "without credentials, query, fragment or whitespace"
@@ -127,7 +127,7 @@ def _get_config():
 
 
 def _get_entity_filter_config():
-    """Return active-profile allow/deny patterns; deny is the final veto."""
+    """Read this profile's filters. Deny takes precedence over allow."""
     allow = _HASS_ENTITY_ALLOWLIST or (get_secret("HASS_ENTITY_ALLOWLIST", "") or "")
     deny = _HASS_ENTITY_DENYLIST or (get_secret("HASS_ENTITY_DENYLIST", "") or "")
     return _parse_entity_filter_patterns(allow), _parse_entity_filter_patterns(deny)
@@ -141,30 +141,17 @@ def _parse_entity_filter_patterns(value: str) -> List[str]:
 
 
 def _entity_matches(entity_id: str, patterns: List[str]) -> bool:
-    """Return True if ``entity_id`` matches any operator pattern.
+    """Match exact IDs, shell globs or family prefixes.
 
-    Matching is deliberately forgiving so an operator can write
-    ``office_thermostat_*`` (the way the device family is usually
-    abbreviated) and have it cover ``office_thermostat.0_external_temperature``
-    (a real HA entity id whose separator after the device name is a dot):
-
-    - exact match
-    - prefix match, treating ``.`` and ``_`` as equivalent at the boundary
-      (``office_thermostat.0_x`` matches ``office_thermostat_*``)
-    - shell-glob match (``*.valve*``, ``climate.office`` etc.)
+    Family prefixes accept either separator: office_thermostat_* matches
+    office_thermostat.0_x. A bare climate.office only matches that exact ID.
     """
     for pat in patterns:
         if not pat:
             continue
         if entity_id == pat or fnmatch.fnmatch(entity_id, pat):
             return True
-        # Family-prefix match. A pattern that ends in ``*`` or a separator
-        # (``office_thermostat_*``, ``office_thermostat.``) is a family
-        # prefix: it should cover ``office_thermostat.0_x`` by treating the
-        # separator after the matched base (``.`` or ``_``) as
-        # interchangeable, or the id to end exactly at the base. A bare id
-        # like ``climate.office`` without a trailing separator is only an
-        # exact/glob match, so it does NOT swallow ``climate.office_zombie``.
+        # Only patterns ending in *, . or _ can match a family.
         if pat[-1] in "*._":
             base = pat.rstrip("*._")
             if base and entity_id.startswith(base) and (
@@ -188,7 +175,7 @@ _REGISTRY_MAX_MSG = 64 * 1024 * 1024
 
 
 def _run_async(coro):
-    """Run a coroutine from a sync handler; hops to a thread if a loop is already running."""
+    """Run a coroutine from a synchronous handler, waiting for its result."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -196,19 +183,19 @@ def _run_async(coro):
     if loop and loop.is_running():  # already inside a loop: asyncio.run() needs its own thread
         import concurrent.futures
         import contextvars
-        # Carry the caller's Context: the coroutine reads HASS_* via get_secret, which is profile-scoped.
+        # Keep the active profile's secrets available in the worker thread.
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result(timeout=30)
     return asyncio.run(coro)
 
 
 def _dispatch(coro, log_name: str, fail_msg: str, max_bytes: int = _DEFAULT_LIMITS.max_bytes) -> str:
-    """Run ``coro`` and wrap as ``{"result": ...}``; on error log and return tool_error."""
+    """Return the result as JSON, or a public error message if the call fails."""
     try:
         return _bounded_result_json(_run_async(coro), max_bytes)
     except Exception as exc:
         import aiohttp
-        # Errors can carry URLs, credentials or arbitrary peer text; never reflect them.
+        # Raw exceptions may contain credentials or private URLs.
         if isinstance(exc, _PublicHAError):
             detail = str(exc)
         elif isinstance(exc, TimeoutError):
@@ -269,17 +256,17 @@ async def _ws_command(message: dict, timeout: int = 30):
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def reject_redirect(session, context, params):
-        # The auth token belongs only to the explicitly configured endpoint.
+        # Reject redirects before we can send the token to a different endpoint.
         raise _PublicHAError("Home Assistant redirects are not allowed; configure the final HASS_URL")
 
     trace = aiohttp.TraceConfig()
     trace.on_request_redirect.append(reject_redirect)
     async with asyncio.timeout(timeout):
-        # HA authenticates via WebSocket JSON; response cookies are unnecessary.
+        # HA uses token authentication, so we don't need cookies.
         async with aiohttp.ClientSession(
             timeout=client_timeout, trace_configs=[trace], cookie_jar=aiohttp.DummyCookieJar(),
         ) as session:
-            # recorder/list_statistic_ids on a big install exceeds aiohttp's 4 MiB default frame.
+            # Large statistic lists can exceed aiohttp's default 4 MiB message limit.
             async with session.ws_connect(
                 ws_url, max_msg_size=_REGISTRY_MAX_MSG,
                 timeout=aiohttp.ClientWSTimeout(ws_close=min(1.0, timeout)),
@@ -322,11 +309,10 @@ async def _ws_command(message: dict, timeout: int = 30):
 
 
 def _statistic_filter_violation(statistic_id: str, filters=None) -> Optional[str]:
-    """Why the operator allow/deny lists hide this statistic, or ``None``.
+    """Return the filter rule that excludes this statistic, or None.
 
-    Recorder statistics of an entity use the entity id (``sensor.house_energy``), so they get the
-    same check as ha_get_state. External statistics (``domain:name``) are matched as plain ids:
-    the denylist can veto them, and with an allowlist they must be listed explicitly.
+    Entity statistics use the entity ID. External IDs such as domain:name
+    follow the same allow/deny patterns.
     """
     return _operator_filter_violation(statistic_id.lower(), filters)
 
@@ -341,7 +327,6 @@ async def _async_list_statistics(search=None, max_rows=_DEFAULT_LIMITS.max_rows)
     if not isinstance(statistics, list):
         raise _PublicHAError("Unexpected Recorder statistics list format")
 
-    # Operator allow/deny lists govern statistics too: an entity's long-term statistics share its id.
     allow, deny = filters
     if allow or deny:
         statistics = [
@@ -556,7 +541,6 @@ TOOLS = ((HA_LIST_STATISTICS_SCHEMA, _handle_list_statistics),
 
 
 def register_tools(ctx) -> None:
-    """Register exactly the two statistics tools through the public API."""
     for schema, handler in TOOLS:
         ctx.register_tool(name=schema["name"], toolset=TOOLSET, schema=schema,
                           handler=handler, check_fn=_check_ha_available, emoji="📊")

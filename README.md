@@ -13,20 +13,39 @@ platform, subscribe to events or call Home Assistant services.
 
 Local pre-publication candidate, version 0.1.0. No remote repository or catalog
 entry has been created. Installation from GitHub will be documented after approval.
-Security remediation is in progress: transport/error hardening is implemented;
-patched dependencies and cookie suppression are prepared. Installation compatibility
-with Hermes is currently blocked; query/result budgets are implemented and
-filter and connection-lifecycle improvements are implemented. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
+The planned local hardening is implemented: redirect rejection, fixed public
+errors, a patched dependency floor, discarded cookies, query/result budgets,
+per-call filters and bounded WebSocket closure. The 91-test suite passes in the
+isolated development environment. Installation compatibility with Hermes remains
+blocked by its aiohttp pin; the full installation validation has not passed.
+See [Compatibility](#compatibility) before trying to install this candidate.
+
+## Compatibility
+
+Checked on 2026-10-21: Hermes core revision
+`278aeffe16945e7b1405e3c471ad08553c059237` pins `aiohttp==3.14.3` in its messaging
+and other extras. This plugin requires `aiohttp>=3.14.4,<4` for
+[client security fixes](https://github.com/aio-libs/aiohttp/security/advisories/GHSA-2g87-pp6c-29x5).
+A dependency-resolution dry run confirmed that these requirements conflict.
+No compatible Hermes release has been verified; `>=0.21.5` is the inherited API
+floor, not a guarantee that installation succeeds.
+
+The 91 tests pass on Python 3.14.5 with aiohttp 3.14.4. Hermes's validator and
+Plugin Doctor pass in the isolated test environment. The audit found no known
+advisories in the nine runtime packages checked; development and Hermes-wide
+dependencies were outside that audit.
+
+Publication requires a compatible core and a passing
+`hermes plugins validate /path/to/plugin --install-deps` run through Hermes PM.
+That installation check is still pending. Do not downgrade aiohttp or override
+Hermes's pins to work around the conflict.
 
 ## Requirements and configuration
 
 Python 3.11+, Hermes >=0.21.5, `aiohttp>=3.14.4,<4`, and a Home Assistant instance
-with Recorder statistics and a Long-Lived Access Token. The Hermes floor follows
-the source plugin; this candidate has been tested against the core
-revision `278aeffe16945e7b1405e3c471ad08553c059237`, not every supported release. This API floor is not a claim
-that dependencies resolve with that release: the checked core pins aiohttp 3.14.3,
-which conflicts with this candidate's security floor. No compatible Hermes release
-has been established yet.
+with Recorder statistics and a Long-Lived Access Token. See the compatibility
+note above for the current installation blocker. Other Python and Hermes
+versions have not been tested.
 
 Configure through Hermes's normal profile configuration/secret setup:
 
@@ -162,12 +181,28 @@ ports; no test contacts a user's Home Assistant instance.
 The original statistics tests are retained with import-path changes. Additional
 coverage checks profile propagation, malformed inputs, deadline enforcement,
 external statistic filters and exact two-tool registration. The complete Hermes
-dependency-resolution gate remains pending; see DEPENDENCY_COMPATIBILITY.md.
+dependency-resolution check remains pending; see [Compatibility](#compatibility).
 
 ## License and origin
 
-MIT; the original Nous Research copyright and permission notice are retained in
-LICENSE. Derived from the Home Assistant plugin and PR #126 by goncami, including
-teknium1's filtering and WebSocket improvements. See NOTICE.md for exact commits
-and attribution. This is an independent community plugin, not an official Nous
-Research or Home Assistant product.
+MIT; [LICENSE](LICENSE) retains the original Nous Research copyright and
+permission notice.
+
+Code and tests come from the Home Assistant plugin in
+NousResearch/hermes-official-plugins and [PR #126](https://github.com/NousResearch/hermes-official-plugins/pull/126),
+based on commit `1690b63a4790cb821fb6a319ba524815d4e09411`:
+
+- **goncami**, commit `aad83dca65c8f9ca865fcf39c09be9535f53221b`: the two
+  statistics tools, schemas, Recorder WebSocket calls, input validation and
+  initial tests.
+- **teknium1 (Teknium)**, commit `3a3d2c3b57442a527c04bd8092aa4497541abc0b`:
+  allow/deny filtering, three filter tests and reuse of the existing 64 MiB
+  receive cap for statistics, with the corresponding protocol test update.
+- The configuration, pattern matching, JSON response and sync/async helpers
+  come from the official plugin. The 64 MiB constant predates the statistics PR.
+
+This standalone project retains the statistics tools and adds its own manifest,
+registration, regression tests, transport protection, query/result limits and
+performance changes. The original filter precedence and transport cap remain.
+This is an independent community plugin, not an official Nous Research or
+Home Assistant product; it does not imply endorsement by the original authors.

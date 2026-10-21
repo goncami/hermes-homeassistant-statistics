@@ -1,4 +1,4 @@
-"""Stable per-call filters and bounded WebSocket lifecycle through Hermes dispatch."""
+"""Filter consistency, WebSocket cleanup and Hermes worker dispatch."""
 import asyncio
 import json
 from types import SimpleNamespace
@@ -133,7 +133,7 @@ async def test_real_hermes_registry_worker_preserves_profile_without_freezing_lo
             task = asyncio.create_task(asyncio.to_thread(registry.dispatch, "ha_list_statistics", {}))
             try:
                 await asyncio.wait_for(started.wait(), timeout=2)
-                # Reaching here proves that the caller loop can progress while the real dispatch waits.
+                # The caller loop has resumed while the worker is still waiting.
                 assert not task.done()
             finally:
                 worker_release.set()
