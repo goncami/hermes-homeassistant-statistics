@@ -11,41 +11,36 @@ platform, subscribe to events or call Home Assistant services.
 
 ## Status
 
-Local pre-publication candidate, version 0.1.0. No remote repository or catalog
-entry has been created. Installation from GitHub will be documented after approval.
-The planned local hardening is implemented: redirect rejection, fixed public
-errors, a patched dependency floor, discarded cookies, query/result budgets,
-per-call filters and bounded WebSocket closure. The 91-test suite passes in the
-isolated development environment. Installation compatibility with Hermes remains
-blocked by its aiohttp pin; the full installation validation has not passed.
-See [Compatibility](#compatibility) before trying to install this candidate.
+Version 0.1.0 is published as an independent community plugin. It is not yet
+listed in a Hermes plugin catalog. The hardening includes redirect rejection,
+fixed public errors, a patched dependency floor, discarded cookies,
+query/result budgets, per-call filters and bounded WebSocket closure. The
+91-test suite passes in the isolated development environment. The plugin has
+also been installed and exercised against a live Home Assistant instance; see
+[Compatibility](#compatibility) before installing it on another Hermes host.
 
 ## Compatibility
 
-Checked on 2026-10-21: Hermes core revision
-`278aeffe16945e7b1405e3c471ad08553c059237` pins `aiohttp==3.14.3` in its messaging
-and other extras. This plugin requires `aiohttp>=3.14.4,<4` for
+Tested on 2026-10-21 with Hermes core revision
+`c7ed47f18b1e7d3116c1740993f904e8a54e5acc`, which pins `aiohttp==3.14.5`.
+This plugin requires `aiohttp>=3.14.4,<4` for
 [client security fixes](https://github.com/aio-libs/aiohttp/security/advisories/GHSA-2g87-pp6c-29x5).
-A dependency-resolution dry run confirmed that these requirements conflict.
-No compatible Hermes release has been verified; `>=0.21.5` is the inherited API
-floor, not a guarantee that installation succeeds.
+Hermes PM resolved the combined dependencies, the plugin validator passed, and
+both tools were exercised through Open WebUI against a live Home Assistant
+instance. The 91 tests also pass on Python 3.14.5 with aiohttp 3.14.4 and
+3.14.5.
 
-The 91 tests pass on Python 3.14.5 with aiohttp 3.14.4. Hermes's validator and
-Plugin Doctor pass in the isolated test environment. The audit found no known
-advisories in the nine runtime packages checked; development and Hermes-wide
-dependencies were outside that audit.
-
-Publication requires a compatible core and a passing
-`hermes plugins validate /path/to/plugin --install-deps` run through Hermes PM.
-That installation check is still pending. Do not downgrade aiohttp or override
-Hermes's pins to work around the conflict.
+Hermes `>=0.21.5` is the inherited API floor, not a general installation
+guarantee: an installation needs a Hermes build compatible with this aiohttp
+range. In particular, the checked stable v0.22.4 pin to aiohttp 3.14.3 conflicts
+with this plugin. Do not downgrade aiohttp or override Hermes's pins to work
+around the conflict.
 
 ## Requirements and configuration
 
 Python 3.11+, Hermes >=0.21.5, `aiohttp>=3.14.4,<4`, and a Home Assistant instance
-with Recorder statistics and a Long-Lived Access Token. See the compatibility
-note above for the current installation blocker. Other Python and Hermes
-versions have not been tested.
+with Recorder statistics and a Long-Lived Access Token. The exact Hermes revision
+validated is listed above; other Python and Hermes versions have not been tested.
 
 Configure through Hermes's normal profile configuration/secret setup:
 
@@ -181,7 +176,8 @@ ports; no test contacts a user's Home Assistant instance.
 The original statistics tests are retained with import-path changes. Additional
 coverage checks profile propagation, malformed inputs, deadline enforcement,
 external statistic filters and exact two-tool registration. The complete Hermes
-dependency-resolution check remains pending; see [Compatibility](#compatibility).
+dependency-resolution check passed on the validated core revision; see
+[Compatibility](#compatibility).
 
 ## License and origin
 
