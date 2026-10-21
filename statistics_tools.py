@@ -3,6 +3,9 @@ import asyncio
 import fnmatch
 import json
 import logging
+import math
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 from agent.secret_scope import get_secret
@@ -18,6 +21,73 @@ def tool_error(message: str) -> str:
 
 class _PublicHAError(RuntimeError):
     """An operator-facing message authored here, never supplied by the remote peer."""
+
+
+@dataclass(frozen=True)
+class _StatisticsLimits:
+    max_ids: int = 100
+    max_rows: int = 10_000
+    max_bytes: int = 1_048_576
+
+
+_DEFAULT_LIMITS = _StatisticsLimits()
+
+
+def _get_statistics_limits() -> _StatisticsLimits:
+    values = {}
+    for field, default in (("ids", _DEFAULT_LIMITS.max_ids), ("rows", _DEFAULT_LIMITS.max_rows),
+                           ("bytes", _DEFAULT_LIMITS.max_bytes)):
+        name = "HASS_STATISTICS_MAX_" + field.upper()
+        try:
+            value = int(get_secret(name, str(default)))
+        except (TypeError, ValueError):
+            raise _PublicHAError(f"{name} must be a positive integer") from None
+        if value <= 0:
+            raise _PublicHAError(f"{name} must be a positive integer")
+        values["max_" + field] = value
+    return _StatisticsLimits(**values)
+
+
+def _bounded_result_json(result, max_bytes: int) -> str:
+    # Stop assembling ASCII JSON once the successful output exceeds its budget.
+    chunks = []
+    size = 0
+    for chunk in json.JSONEncoder(ensure_ascii=True).iterencode({"result": result}):
+        size += len(chunk)
+        if size > max_bytes:
+            raise _PublicHAError(
+                f"Statistics result exceeds the {max_bytes}-byte output budget; "
+                "narrow the search, use fewer IDs or split the time range"
+            )
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
+def _check_query_budget(ids, start, end, period, limits):
+    if len(ids) > limits.max_ids:
+        raise _PublicHAError(
+            f"Too many statistic IDs (limit {limits.max_ids}); split the request"
+        )
+    # An edge bin and conservative calendar durations allow partial periods and DST.
+    seconds = {"5minute": 300, "hour": 3600, "day": 23 * 3600,
+               "week": 167 * 3600, "month": 28 * 86400 - 3600,
+               "year": 365 * 86400 - 3600}[period]
+    end = end if end is not None else datetime.now(timezone.utc)
+    duration = max(0, (end - start).total_seconds())
+    estimated_rows = len(ids) * (math.ceil(duration / seconds) + 1)
+    if estimated_rows > limits.max_rows:
+        raise _PublicHAError(
+            f"Query may exceed the {limits.max_rows}-row budget; use fewer IDs, "
+            "split the time range or select a coarser period"
+        )
+
+
+def _check_row_budget(count, max_rows):
+    if count > max_rows:
+        raise _PublicHAError(
+            f"Statistics result exceeds the {max_rows}-row budget; narrow the search, "
+            "use fewer IDs or split the time range; no partial data was returned"
+        )
 
 
 def url_scheme_problem(url: str) -> Optional[str]:
@@ -132,10 +202,10 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _dispatch(coro, log_name: str, fail_msg: str) -> str:
+def _dispatch(coro, log_name: str, fail_msg: str, max_bytes: int = _DEFAULT_LIMITS.max_bytes) -> str:
     """Run ``coro`` and wrap as ``{"result": ...}``; on error log and return tool_error."""
     try:
-        return json.dumps({"result": _run_async(coro)})
+        return _bounded_result_json(_run_async(coro), max_bytes)
     except Exception as exc:
         import aiohttp
         # Errors can carry URLs, credentials or arbitrary peer text; never reflect them.
@@ -258,12 +328,14 @@ def _statistic_filter_violation(statistic_id: str) -> Optional[str]:
     return _operator_filter_violation(statistic_id.lower())
 
 
-async def _async_list_statistics(search=None):
+async def _async_list_statistics(search=None, max_rows=_DEFAULT_LIMITS.max_rows):
     result = await _ws_command({
         'type': 'recorder/list_statistic_ids',
     })
 
-    statistics = result or []
+    statistics = result if result is not None else []
+    if not isinstance(statistics, list):
+        raise _PublicHAError("Unexpected Recorder statistics list format")
 
     # Operator allow/deny lists govern statistics too: an entity's long-term statistics share its id.
     allow, deny = _get_entity_filter_config()
@@ -280,6 +352,7 @@ async def _async_list_statistics(search=None):
             if needle in str(item.get('statistic_id', '')).lower()
         ]
 
+    _check_row_budget(len(statistics), max_rows)
     return {
         'count': len(statistics),
         'statistics': statistics,
@@ -288,10 +361,15 @@ async def _async_list_statistics(search=None):
 
 def _handle_list_statistics(args: dict, **kw) -> str:
     search = args.get('search')
+    try:
+        limits = _get_statistics_limits()
+    except _PublicHAError as exc:
+        return tool_error(str(exc))
     return _dispatch(
-        _async_list_statistics(search),
+        _async_list_statistics(search, limits.max_rows),
         'ha_list_statistics',
         'Failed to list Home Assistant statistics',
+        max_bytes=limits.max_bytes,
     )
 
 
@@ -301,6 +379,7 @@ async def _async_get_statistics(
     end_time,
     period,
     types,
+    max_rows=_DEFAULT_LIMITS.max_rows,
 ):
     message = {
         'type': 'recorder/statistics_during_period',
@@ -313,7 +392,11 @@ async def _async_get_statistics(
     if end_time:
         message['end_time'] = end_time
 
-    return await _ws_command(message)
+    result = await _ws_command(message)
+    if not isinstance(result, dict) or any(not isinstance(rows, list) for rows in result.values()):
+        raise _PublicHAError("Unexpected Recorder statistics series format")
+    _check_row_budget(sum(len(rows) for rows in result.values()), max_rows)
+    return result
 
 
 def _handle_get_statistics(args: dict, **kw) -> str:
@@ -384,6 +467,14 @@ def _handle_get_statistics(args: dict, **kw) -> str:
             + ', '.join(map(str, invalid_types))
         )
 
+    statistic_ids = list(dict.fromkeys(statistic_ids))
+    types = list(dict.fromkeys(types))
+    try:
+        limits = _get_statistics_limits()
+        _check_query_budget(statistic_ids, parsed_start, parsed_end, period, limits)
+    except _PublicHAError as exc:
+        return tool_error(str(exc))
+
     return _dispatch(
         _async_get_statistics(
             statistic_ids,
@@ -391,9 +482,11 @@ def _handle_get_statistics(args: dict, **kw) -> str:
             end_time,
             period,
             types,
+            limits.max_rows,
         ),
         'ha_get_statistics',
         'Failed to get Home Assistant statistics',
+        max_bytes=limits.max_bytes,
     )
 
 
@@ -423,7 +516,7 @@ HA_GET_STATISTICS_SCHEMA: Dict[str, Any] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "minItems": 1,
-                "description": "Statistic IDs to query. Use ha_list_statistics to discover available IDs.",
+                "description": "Statistic IDs to query (default budget: 100 unique IDs). Use ha_list_statistics to discover available IDs.",
             },
             "start_time": {
                 "type": "string",

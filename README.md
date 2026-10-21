@@ -15,15 +15,15 @@ Local pre-publication candidate, version 0.1.0. No remote repository or catalog
 entry has been created. Installation from GitHub will be documented after approval.
 Security remediation is in progress: transport/error hardening is implemented;
 patched dependencies and cookie suppression are prepared. Installation compatibility
-with Hermes is currently blocked; query/result budgets and performance work remain
-pending. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
+with Hermes is currently blocked; query/result budgets are implemented and
+performance work remains pending. See DEPENDENCY_COMPATIBILITY.md before trying to install this candidate.
 
 ## Requirements and configuration
 
 Python 3.11+, Hermes >=0.21.5, `aiohttp>=3.14.4,<4`, and a Home Assistant instance
 with Recorder statistics and a Long-Lived Access Token. The Hermes floor follows
-the source plugin; this candidate has been tested against the exact core main
-core revision `278aeffe16945e7b1405e3c471ad08553c059237`, not every supported release. This API floor is not a claim
+the source plugin; this candidate has been tested against the core
+revision `278aeffe16945e7b1405e3c471ad08553c059237`, not every supported release. This API floor is not a claim
 that dependencies resolve with that release: the checked core pins aiohttp 3.14.3,
 which conflicts with this candidate's security floor. No compatible Hermes release
 has been established yet.
@@ -84,8 +84,35 @@ and Recorder configuration. For interval energy consumption, `change` is normall
 more useful than treating the cumulative `sum` as consumption.
 
 Success responses are JSON with a `result` field; failures have an `error` field.
-There is no pagination or result cap beyond the 64 MiB WebSocket message limit;
-use narrow time ranges, fewer IDs and suitable aggregation periods for large data.
+### Resource budgets
+
+The following positive-integer settings are read from the active profile for
+each call. Invalid settings fail before connecting:
+
+| Setting | Default | Budget |
+| --- | --- | --- |
+| `HASS_STATISTICS_MAX_IDS` | 100 | Distinct IDs in one query |
+| `HASS_STATISTICS_MAX_ROWS` | 10000 | Estimated query rows, actual rows across all returned series, or matching discovery entries |
+| `HASS_STATISTICS_MAX_BYTES` | 1048576 | Bytes of the complete serialized successful tool response, including its JSON envelope |
+
+Duplicate IDs and types are sent once, preserving their original order. A
+conservative point estimate uses the requested period, time range and ID count
+before contacting Recorder; omitting `end_time` uses the current time for that
+estimate. Partial bins and calendar/DST variation are allowed for in the estimate,
+so a query close to the budget can be refused even if the actual data is sparse.
+Coarse monthly/yearly queries can still cover long histories.
+
+Returned rows and serialized bytes are checked independently. Discovery applies
+operator filters and `search` before checking the matching-entry budget. A budget
+failure returns an error asking for a narrower search, fewer IDs, a shorter range
+or coarser aggregation. No successful partial history is returned and nothing is
+silently truncated. Error messages themselves are outside the success-byte cap.
+
+The 64 MiB WebSocket receive cap is retained for large installations. Recorder's
+response is still received and decoded before the actual row/output checks;
+these budgets do not bound peak JSON-decoding memory to 1 MiB and cannot stop
+backend work that has already started. The preflight estimate reduces oversized
+normal queries. There is no pagination or automatic background fetching.
 
 ## Network and data disclosure
 

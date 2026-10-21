@@ -24,3 +24,12 @@ optional_env:
   - name: HASS_ENTITY_DENYLIST
     description: Comma-separated statistic ID deny patterns; final veto
     password: false
+  - name: HASS_STATISTICS_MAX_IDS
+    description: Maximum unique IDs per query (positive integer, default 100)
+    password: false
+  - name: HASS_STATISTICS_MAX_ROWS
+    description: Maximum estimated/query result rows or matching discovery entries (default 10000)
+    password: false
+  - name: HASS_STATISTICS_MAX_BYTES
+    description: Maximum serialized successful tool-result bytes (default 1048576)
+    password: false
